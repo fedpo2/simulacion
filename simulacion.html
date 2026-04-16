@@ -1,0 +1,562 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Matchmaking Simulation</title>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@sgratzl/chartjs-chart-boxplot@4.4.4/build/index.umd.min.js"></script>
+    <style>
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+            line-height: 1.6;
+            color: #333;
+            max-width: 1200px;
+            margin: 0 auto;
+            padding: 20px;
+            background-color: #f4f4f9;
+        }
+        h1 {
+            text-align: center;
+            color: #2c3e50;
+        }
+        .container {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 20px;
+        }
+        .controls {
+            flex: 1;
+            min-width: 300px;
+            background: #fff;
+            padding: 20px;
+            border-radius: 8px;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+        }
+        .charts {
+            flex: 2;
+            min-width: 600px;
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(450px, 1fr));
+            gap: 20px;
+        }
+        .chart-container {
+            background: #fff;
+            padding: 20px;
+            border-radius: 8px;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+            height: 400px;
+        }
+        .control-group {
+            margin-bottom: 15px;
+        }
+        .control-group label {
+            display: block;
+            margin-bottom: 5px;
+            font-weight: bold;
+        }
+        .control-group input {
+            width: 100%;
+            padding: 8px;
+            border: 1px solid #ccc;
+            border-radius: 4px;
+            box-sizing: border-box;
+        }
+        button {
+            width: 100%;
+            padding: 12px;
+            background-color: #3498db;
+            color: white;
+            border: none;
+            border-radius: 4px;
+            font-size: 16px;
+            cursor: pointer;
+            transition: background-color 0.3s;
+        }
+        button:hover {
+            background-color: #2980b9;
+        }
+        button:disabled {
+            background-color: #bdc3c7;
+            cursor: not-allowed;
+        }
+        .results-summary {
+            margin-top: 20px;
+            padding: 15px;
+            background: #ecf0f1;
+            border-radius: 4px;
+        }
+        .results-summary h3 {
+            margin-top: 0;
+        }
+        table {
+            width: 100%;
+            border-collapse: collapse;
+        }
+        th, td {
+            text-align: left;
+            padding: 8px;
+            border-bottom: 1px solid #ddd;
+        }
+    </style>
+</head>
+<body>
+
+<h1>Matchmaking SBMM Simulation</h1>
+
+<div class="container">
+    <div class="controls">
+        <h3>Parameters</h3>
+        <div class="control-group">
+            <label for="simTime">Simulation Time (ticks):</label>
+            <input type="number" id="simTime" value="5000">
+        </div>
+        <div class="control-group">
+            <label for="playersPerTick">Avg Players Per Tick (Poisson):</label>
+            <input type="number" id="playersPerTick" value="8">
+        </div>
+        <div class="control-group">
+            <label for="teamSize">Team Size:</label>
+            <input type="number" id="teamSize" value="5">
+        </div>
+        <div class="control-group">
+            <label for="baseSkill">Base Skill (Mean):</label>
+            <input type="number" id="baseSkill" value="1000">
+        </div>
+        <div class="control-group">
+            <label for="skillStd">Skill Std Dev:</label>
+            <input type="number" id="skillStd" value="200">
+        </div>
+        <div class="control-group">
+            <label for="sbmmThreshold">SBMM Threshold (Strict):</label>
+            <input type="number" id="sbmmThreshold" value="100">
+        </div>
+        <div class="control-group">
+            <label for="expansionRate">Expansion Rate (Dynamic):</label>
+            <input type="number" id="expansionRate" value="5">
+        </div>
+        <button id="runBtn">Run Simulation</button>
+
+        <div class="results-summary" id="summary">
+            <h3>Summary</h3>
+            <table id="summaryTable">
+                <thead>
+                    <tr>
+                        <th>Strategy</th>
+                        <th>Avg Skill Gap</th>
+                        <th>Avg Wait</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    <tr><td colspan="3" style="text-align:center">No data</td></tr>
+                </tbody>
+            </table>
+        </div>
+    </div>
+
+    <div class="charts">
+        <div class="chart-container">
+            <canvas id="scatterChart"></canvas>
+        </div>
+        <div class="chart-container">
+            <canvas id="skillBoxChart"></canvas>
+        </div>
+        <div class="chart-container">
+            <canvas id="waitBoxChart"></canvas>
+        </div>
+        <div class="chart-container">
+            <canvas id="skillHistChart"></canvas>
+        </div>
+        <div class="chart-container">
+            <canvas id="skillGapChart"></canvas>
+        </div>
+        <div class="chart-container">
+            <canvas id="waitTimeChart"></canvas>
+        </div>
+    </div>
+</div>
+
+<script>
+    // --- Math Helpers ---
+    function gaussianRandom(mean = 0, stdev = 1) {
+        let u = 1 - Math.random();
+        let v = Math.random();
+        let z = Math.sqrt(-2.0 * Math.log(u)) * Math.cos(2.0 * Math.PI * v);
+        return z * stdev + mean;
+    }
+
+    function poissonRandom(lambda) {
+        let L = Math.exp(-lambda);
+        let k = 0;
+        let p = 1;
+        do {
+            k++;
+            p *= Math.random();
+        } while (p > L);
+        return k - 1;
+    }
+
+    // --- Simulation Logic ---
+    class Player {
+        constructor(skill, joinTime) {
+            this.skill = skill;
+            this.joinTime = joinTime;
+        }
+    }
+
+    function generatePlayer(currentTime, baseSkill, skillStd) {
+        return new Player(gaussianRandom(baseSkill, skillStd), currentTime);
+    }
+
+    function splitTeams(players, teamSize) {
+        // Shuffle
+        for (let i = players.length - 1; i > 0; i--) {
+            const j = Math.floor(Math.random() * (i + 1));
+            [players[i], players[j]] = [players[j], players[i]];
+        }
+        return [players.slice(0, teamSize), players.slice(teamSize)];
+    }
+
+    // Matchmaking strategies
+    function matchmakingRandom(queue, currentTime, matchSize, teamSize) {
+        let matches = [];
+        while (queue.length >= matchSize) {
+            // Pick matchSize random players
+            let players = [];
+            for (let i = 0; i < matchSize; i++) {
+                let idx = Math.floor(Math.random() * queue.length);
+                players.push(queue.splice(idx, 1)[0]);
+            }
+            let [teamA, teamB] = splitTeams(players, teamSize);
+            matches.push({teamA, teamB, players});
+        }
+        return matches;
+    }
+
+    function matchmakingStrict(queue, currentTime, matchSize, teamSize, threshold) {
+        let matches = [];
+        queue.sort((a, b) => a.skill - b.skill);
+
+        let i = 0;
+        while (i + matchSize <= queue.length) {
+            let group = queue.slice(i, i + matchSize);
+            let skills = group.map(p => p.skill);
+            let skillGap = Math.max(...skills) - Math.min(...skills);
+
+            if (skillGap <= threshold) {
+                let players = queue.splice(i, matchSize);
+                let [teamA, teamB] = splitTeams(players, teamSize);
+                matches.push({teamA, teamB, players});
+            } else {
+                i++;
+            }
+        }
+        return matches;
+    }
+
+    function matchmakingDynamic(queue, currentTime, matchSize, teamSize, threshold, expansionRate) {
+        let matches = [];
+        queue.sort((a, b) => a.skill - b.skill);
+
+        let i = 0;
+        while (i + matchSize <= queue.length) {
+            let group = queue.slice(i, i + matchSize);
+            let skills = group.map(p => p.skill);
+            let skillGap = Math.max(...skills) - Math.min(...skills);
+
+            let maxWait = Math.max(...group.map(p => currentTime - p.joinTime));
+            let allowedRange = threshold + maxWait * expansionRate;
+
+            if (skillGap <= allowedRange) {
+                let players = queue.splice(i, matchSize);
+                let [teamA, teamB] = splitTeams(players, teamSize);
+                matches.push({teamA, teamB, players});
+            } else {
+                i++;
+            }
+        }
+        return matches;
+    }
+
+    function runSimulation(matchmakingFn, params) {
+        let queue = [];
+        let waitTimes = [];
+        let skillDiffs = [];
+        let matchSize = params.teamSize * 2;
+
+        for (let t = 0; t < params.simTime; t++) {
+            let arrivals = poissonRandom(params.playersPerTick);
+            for (let j = 0; j < arrivals; j++) {
+                queue.push(generatePlayer(t, params.baseSkill, params.skillStd));
+            }
+
+            let matches = matchmakingFn(queue, t, matchSize, params.teamSize, params.sbmmThreshold, params.expansionRate);
+
+            for (let match of matches) {
+                let skills = match.players.map(p => p.skill);
+                let diff = Math.max(...skills) - Math.min(...skills);
+                skillDiffs.push(diff);
+
+                let avgWait = match.players.reduce((sum, p) => sum + (t - p.joinTime), 0) / match.players.length;
+                waitTimes.push(avgWait);
+            }
+        }
+        return {skillDiffs, waitTimes};
+    }
+
+    // --- Charting ---
+    let skillGapChart, waitTimeChart, scatterChart, skillBoxChart, waitBoxChart, skillHistChart;
+
+    function getHistogram(data, binSize = 10, density = true) {
+        if (data.length === 0) return { labels: [], values: [] };
+        let min = 0;
+        let max = Math.max(...data);
+        let binsCount = Math.ceil((max - min) / binSize);
+        let bins = new Array(binsCount).fill(0);
+        let labels = [];
+        for (let i = 0; i < binsCount; i++) {
+            labels.push(Math.round(min + i * binSize));
+        }
+        for (let val of data) {
+            let binIdx = Math.floor((val - min) / binSize);
+            if (binIdx >= binsCount) binIdx = binsCount - 1;
+            bins[binIdx]++;
+        }
+        
+        let values = bins;
+        if (density) {
+            let sum = data.length;
+            values = bins.map(v => v / sum);
+        }
+        return { labels, values };
+    }
+
+    function samplePoints(xArr, yArr, maxPoints = 2000) {
+        if (xArr.length <= maxPoints) {
+            return xArr.map((x, i) => ({x: x, y: yArr[i]}));
+        }
+        let step = xArr.length / maxPoints;
+        let result = [];
+        for (let i = 0; i < maxPoints; i++) {
+            let idx = Math.floor(i * step);
+            result.push({x: xArr[idx], y: yArr[idx]});
+        }
+        return result;
+    }
+
+    function updateCharts(results) {
+        const binSizeSkill = 20;
+        const binSizeWait = 5;
+
+        // --- Scatter: Balance vs Wait ---
+        const scatterData = {
+            datasets: [
+                { label: 'No SBMM', data: samplePoints(results.random.waitTimes, results.random.skillDiffs), backgroundColor: 'rgba(255, 0, 0, 0.3)', pointRadius: 2 },
+                { label: 'SBMM Strict', data: samplePoints(results.strict.waitTimes, results.strict.skillDiffs), backgroundColor: 'rgba(0, 255, 0, 0.3)', pointRadius: 2 },
+                { label: 'SBMM Dynamic', data: samplePoints(results.dynamic.waitTimes, results.dynamic.skillDiffs), backgroundColor: 'rgba(0, 0, 255, 0.3)', pointRadius: 2 }
+            ]
+        };
+        if (scatterChart) scatterChart.destroy();
+        scatterChart = new Chart(document.getElementById('scatterChart'), {
+            type: 'scatter',
+            data: scatterData,
+            options: {
+                responsive: true,
+                maintainAspectRatio: false,
+                plugins: { title: { display: true, text: 'Balance vs Wait Time (Individual Matches)' } },
+                scales: { 
+                    x: { title: { display: true, text: 'Wait Time (ticks)' } }, 
+                    y: { title: { display: true, text: 'Skill Difference (max-min)' } } 
+                }
+            }
+        });
+
+        // --- Boxplot: Skill Difference ---
+        const skillBoxData = {
+            labels: ['No SBMM', 'SBMM Strict', 'SBMM Dynamic'],
+            datasets: [{
+                label: 'Skill Range (max - min)',
+                data: [results.random.skillDiffs, results.strict.skillDiffs, results.dynamic.skillDiffs],
+                backgroundColor: ['rgba(255, 0, 0, 0.5)', 'rgba(0, 255, 0, 0.5)', 'rgba(0, 0, 255, 0.5)'],
+                borderColor: ['red', 'green', 'blue'],
+                borderWidth: 1
+            }]
+        };
+        if (skillBoxChart) skillBoxChart.destroy();
+        skillBoxChart = new Chart(document.getElementById('skillBoxChart'), {
+            type: 'boxplot',
+            data: skillBoxData,
+            options: {
+                responsive: true,
+                maintainAspectRatio: false,
+                plugins: { title: { display: true, text: 'Skill Difference per Match (Boxplot)' }, legend: { display: false } },
+                scales: { y: { title: { display: true, text: 'Skill Range' } } }
+            }
+        });
+
+        // --- Boxplot: Wait Time ---
+        const waitBoxData = {
+            labels: ['No SBMM', 'SBMM Strict', 'SBMM Dynamic'],
+            datasets: [{
+                label: 'Wait Time',
+                data: [results.random.waitTimes, results.strict.waitTimes, results.dynamic.waitTimes],
+                backgroundColor: ['rgba(255, 0, 0, 0.5)', 'rgba(0, 255, 0, 0.5)', 'rgba(0, 0, 255, 0.5)'],
+                borderColor: ['red', 'green', 'blue'],
+                borderWidth: 1
+            }]
+        };
+        if (waitBoxChart) waitBoxChart.destroy();
+        waitBoxChart = new Chart(document.getElementById('waitBoxChart'), {
+            type: 'boxplot',
+            data: waitBoxData,
+            options: {
+                responsive: true,
+                maintainAspectRatio: false,
+                plugins: { title: { display: true, text: 'Wait Time per Match (Boxplot)' }, legend: { display: false } },
+                scales: { y: { title: { display: true, text: 'Wait Time (ticks)' } } }
+            }
+        });
+
+        // --- Histogram: Skill Difference ---
+        const rhc = getHistogram(results.random.skillDiffs, binSizeSkill, false);
+        const shc = getHistogram(results.strict.skillDiffs, binSizeSkill, false);
+        const dhc = getHistogram(results.dynamic.skillDiffs, binSizeSkill, false);
+        const skillHistLabels = [...new Set([...rhc.labels, ...shc.labels, ...dhc.labels])].sort((a,b) => a-b);
+        const getHistDataPoints = (hist, labels) => {
+            let map = new Map(hist.labels.map((l, i) => [l, hist.values[i]]));
+            return labels.map(l => map.get(l) || 0);
+        };
+
+        const skillHistData = {
+            labels: skillHistLabels,
+            datasets: [
+                { label: 'No SBMM', data: getHistDataPoints(rhc, skillHistLabels), backgroundColor: 'rgba(255, 0, 0, 0.5)', borderColor: 'red', borderWidth: 1 },
+                { label: 'SBMM Strict', data: getHistDataPoints(shc, skillHistLabels), backgroundColor: 'rgba(0, 255, 0, 0.5)', borderColor: 'green', borderWidth: 1 },
+                { label: 'SBMM Dynamic', data: getHistDataPoints(dhc, skillHistLabels), backgroundColor: 'rgba(0, 0, 255, 0.5)', borderColor: 'blue', borderWidth: 1 }
+            ]
+        };
+        if (skillHistChart) skillHistChart.destroy();
+        skillHistChart = new Chart(document.getElementById('skillHistChart'), {
+            type: 'bar',
+            data: skillHistData,
+            options: {
+                responsive: true,
+                maintainAspectRatio: false,
+                plugins: { title: { display: true, text: 'Skill Difference Distribution (Histogram)' } },
+                scales: { x: { title: { display: true, text: 'Skill Range' } }, y: { title: { display: true, text: 'Frequency' } } }
+            }
+        });
+
+        // --- Density Plots (Existing) ---
+        const rHist = getHistogram(results.random.skillDiffs, binSizeSkill);
+        const sHist = getHistogram(results.strict.skillDiffs, binSizeSkill);
+        const dHist = getHistogram(results.dynamic.skillDiffs, binSizeSkill);
+
+        // Skill Gap Chart
+        const skillLabels = [...new Set([...rHist.labels, ...sHist.labels, ...dHist.labels])].sort((a,b) => a-b);
+        const getDataPoints = (hist, labels) => {
+            let map = new Map(hist.labels.map((l, i) => [l, hist.values[i]]));
+            return labels.map(l => map.get(l) || 0);
+        };
+
+        const skillData = {
+            labels: skillLabels,
+            datasets: [
+                { label: 'No SBMM', data: getDataPoints(rHist, skillLabels), borderColor: 'red', tension: 0.1, fill: false },
+                { label: 'SBMM Strict', data: getDataPoints(sHist, skillLabels), borderColor: 'green', tension: 0.1, fill: false },
+                { label: 'SBMM Dynamic', data: getDataPoints(dHist, skillLabels), borderColor: 'blue', tension: 0.1, fill: false }
+            ]
+        };
+
+        if (skillGapChart) skillGapChart.destroy();
+        skillGapChart = new Chart(document.getElementById('skillGapChart'), {
+            type: 'line',
+            data: skillData,
+            options: {
+                responsive: true,
+                maintainAspectRatio: false,
+                plugins: { title: { display: true, text: 'Match Count by Skill Gap (Density)' } },
+                scales: { x: { title: { display: true, text: 'Skill Gap (max - min)' } }, y: { title: { display: true, text: 'Density' } } }
+            }
+        });
+
+        // Wait Time Chart
+        const rwHist = getHistogram(results.random.waitTimes, binSizeWait);
+        const swHist = getHistogram(results.strict.waitTimes, binSizeWait);
+        const dwHist = getHistogram(results.dynamic.waitTimes, binSizeWait);
+
+        const waitLabels = [...new Set([...rwHist.labels, ...swHist.labels, ...dwHist.labels])].sort((a,b) => a-b);
+        const waitData = {
+            labels: waitLabels,
+            datasets: [
+                { label: 'No SBMM', data: getDataPoints(rwHist, waitLabels), borderColor: 'red', tension: 0.1, fill: false },
+                { label: 'SBMM Strict', data: getDataPoints(swHist, waitLabels), borderColor: 'green', tension: 0.1, fill: false },
+                { label: 'SBMM Dynamic', data: getDataPoints(dwHist, waitLabels), borderColor: 'blue', tension: 0.1, fill: false }
+            ]
+        };
+
+        if (waitTimeChart) waitTimeChart.destroy();
+        waitTimeChart = new Chart(document.getElementById('waitTimeChart'), {
+            type: 'line',
+            data: waitData,
+            options: {
+                responsive: true,
+                maintainAspectRatio: false,
+                plugins: { title: { display: true, text: 'Match Count by Wait Time (Density)' } },
+                scales: { 
+                    x: { title: { display: true, text: 'Wait Time (ticks)' } }, 
+                    y: { title: { display: true, text: 'Density' } } 
+                }
+            }
+        });
+
+        // Update Summary Table
+        const avg = arr => arr.length ? (arr.reduce((a,b) => a+b, 0) / arr.length).toFixed(2) : "0.00";
+        const tbody = document.querySelector("#summaryTable tbody");
+        tbody.innerHTML = `
+            <tr><td>No SBMM</td><td>${avg(results.random.skillDiffs)}</td><td>${avg(results.random.waitTimes)}</td></tr>
+            <tr><td>SBMM Strict</td><td>${avg(results.strict.skillDiffs)}</td><td>${avg(results.strict.waitTimes)}</td></tr>
+            <tr><td>SBMM Dynamic</td><td>${avg(results.dynamic.skillDiffs)}</td><td>${avg(results.dynamic.waitTimes)}</td></tr>
+        `;
+    }
+
+    // --- UI Logic ---
+    async function performSimulation() {
+        const btn = document.getElementById('runBtn');
+        btn.disabled = true;
+        btn.innerText = 'Running...';
+
+        // Brief delay to allow UI to update
+        await new Promise(resolve => setTimeout(resolve, 50));
+
+        const params = {
+            simTime: parseInt(document.getElementById('simTime').value),
+            playersPerTick: parseInt(document.getElementById('playersPerTick').value),
+            teamSize: parseInt(document.getElementById('teamSize').value),
+            baseSkill: parseInt(document.getElementById('baseSkill').value),
+            skillStd: parseInt(document.getElementById('skillStd').value),
+            sbmmThreshold: parseInt(document.getElementById('sbmmThreshold').value),
+            expansionRate: parseInt(document.getElementById('expansionRate').value)
+        };
+
+        const results = {
+            random: runSimulation(matchmakingRandom, params),
+            strict: runSimulation(matchmakingStrict, params),
+            dynamic: runSimulation(matchmakingDynamic, params)
+        };
+
+        updateCharts(results);
+
+        btn.disabled = false;
+        btn.innerText = 'Run Simulation';
+    }
+
+    document.getElementById('runBtn').addEventListener('click', performSimulation);
+
+    // Initial run
+    window.addEventListener('load', performSimulation);
+
+</script>
+
+</body>
+</html>
